@@ -1,221 +1,71 @@
-# E-Wallet Setup Guide
+# E-Wallet
 
-Follow the steps below to set up and run the E-Wallet project on your computer.
+A desktop e-wallet application built with **JavaFX** and **MySQL**. Users can register, log in, deposit/withdraw/transfer funds, earn reward points, and manage their account, while an admin role can view and manage all users. The project also demonstrates **Java Serialization** for session persistence and two **SOLID** design principles applied to the codebase.
 
----
+## Major Features
 
-## Prerequisites
+- **User registration & login** — sign up with a username, mobile number, password, and PIN; log in with either a username or mobile number.
+- **PIN-based quick unlock** — if a session already exists, the app skips straight to a PIN prompt instead of a full re-login.
+- **Wallet operations** — deposit, withdraw, and transfer funds between users, with balance and transaction history tracking.
+- **Reward points** — points are earned on transactions and tracked per user (`RewardTier`).
+- **Forgot password recovery** — reset a forgotten password using a recovery code set at registration.
+- **Account settings** — update username/password/PIN, or deactivate (soft-delete) your own account.
+- **Admin dashboard** — a seeded admin account can view all registered users, activate/deactivate accounts, and review an audit log of admin actions.
+- **Light/dark theme toggle**, persisted across restarts.
+- **Session persistence via Java Serialization** (see below), so the app remembers who's logged in between runs.
 
-Before starting, make sure you have the following installed:
+## Tech Stack
 
-- Java JDK (version used for the project)
-- IntelliJ IDEA
-- XAMPP (Apache & MySQL)
+- Java 21, JavaFX 21
+- MySQL (via `mysql-connector-j`)
+- jBCrypt for password/PIN hashing
+- Maven
 
----
+## Getting Started
 
-# 1. Download the Project
+1. Run `schema.sql` against your MySQL server (creates the `ewallet_db` database and tables).
+2. Run the app once: `mvn clean javafx:run`. On first launch it automatically seeds a working admin account (see `UserRepository.ADMIN_*` constants for the default credentials, or check the console output on first run).
+3. Log in as admin, or register your own account from the login screen.
 
-1. Download **EWallet.zip** from the repository or from your group member.
-2. Right-click the ZIP file and select **Extract All...**
-3. Extract it to any folder you like.
+## Session Management via Java Serialization
 
-Example:
+Logged-in state is persisted to disk using Java's built-in object serialization, rather than an in-memory-only session.
 
-```
-C:\Users\YourName\Documents\EWallet
-```
+**How it works:**
 
-> **Important:** Do **NOT** place the project inside the `htdocs` folder. This is a **Java desktop application**, not a PHP website. The project does not run through Apache.
+| Step | Class / Method | What happens |
+|---|---|---|
+| **Create** | `LoginView` → `SessionManager.save(user)` | On a successful login, the `User` is wrapped in a `UserSession` and written to `session.dat` with `ObjectOutputStream`. |
+| **Use / Validate** | `Main.start()` → `SessionManager.load()` | On app startup, `session.dat` is deserialized with `ObjectInputStream`. If a valid session is found, the app goes straight to the PIN-unlock screen instead of full login; if not (or the file is missing/corrupt), it shows the login screen. |
+| **Delete** | `SessionManager.clear()`, called from logout, "switch account," and account-deletion flows | `session.dat` is deleted from disk, and the user is redirected back to the login screen (`SceneManager.showLogin()`). |
 
----
+**Design notes:**
 
-# 2. Install and Start XAMPP
+- `UserSession` is a deliberately minimal `Serializable` class — it only stores `id`, `username`, `mobileNumber`, and `admin`. It does **not** serialize the full `User` object, which carries the password/PIN/recovery-code hashes, keeping sensitive data out of the on-disk session file.
+- `UserSession` declares a `serialVersionUID`, so an incompatible/old `session.dat` is detected cleanly rather than failing unpredictably.
+- `SessionManager.load()` treats a missing or corrupted session file as "no session" (and deletes the bad file) rather than crashing the app.
 
-If you don't have XAMPP installed:
+Relevant files: `SessionManager.java`, `UserSession.java`, `Main.java`, `LoginView.java`, `DashboardView.java`, `PinUnlockView.java`, `SettingsView.java`.
 
-1. Download it from:
-   https://www.apachefriends.org/
+## SOLID Principles Applied
 
-2. Install using the default settings.
+### 1. Single Responsibility Principle (SRP)
 
-3. Open the **XAMPP Control Panel**.
+**Classes involved:** `DataStore`, `UserRepository`, `TransactionService`, `AdminAuditService`
 
-4. Start the following services:
+Data access was originally one large class handling everything — user lookups, registration, wallet transactions, and admin actions. It's now split by responsibility:
 
-- Apache
-- MySQL
+- `UserRepository` — user lookups, registration, and account settings.
+- `TransactionService` — deposits, withdrawals, transfers, and reward points.
+- `AdminAuditService` — admin activation/deactivation actions and the audit log.
+- `DataStore` — a thin static facade that delegates to the three classes above, so existing call sites don't need to change.
 
-Both services should turn **green**.
+**Benefit:** each class now has exactly one reason to change. Adjusting reward-point math, for example, only touches `TransactionService`; changing how the audit log is stored only touches `AdminAuditService`. This makes the code easier to test, read, and maintain, and reduces the risk of an unrelated change introducing a bug elsewhere.
 
----
+### 2. Dependency Inversion Principle (DIP)
 
-# 3. Open phpMyAdmin
+**Classes involved:** `UserLookup` (interface), `UserRepository` (implementation), `LoginView`, `PinUnlockView`
 
-Open your browser and go to:
+`LoginView` and `PinUnlockView` need to look up users during login/unlock, but they depend on the `UserLookup` interface (`findUserByMobile`, `findUserByUsername`, `findUserById`) rather than directly on the concrete `UserRepository` class. `UserRepository` implements `UserLookup` and is injected through the constructor, with a no-arg constructor provided for convenience that wires in the real implementation.
 
-```
-http://localhost/phpmyadmin
-```
-
-> Apache only needs to be running so phpMyAdmin can open. The E-Wallet application itself is **not** hosted on Apache.
-
----
-
-# 4. Create the Database
-
-## If `ewallet_db` does NOT exist
-
-1. Open **phpMyAdmin**.
-2. Click the **SQL** tab.
-3. Open the project's **schema.sql** file.
-4. Copy all of its contents.
-5. Paste it into phpMyAdmin.
-6. Click **Go**.
-
-This will automatically create:
-
-- `ewallet_db`
-- `users` table
-- `transactions` table
-- Default administrator account
-
----
-
-## If `ewallet_db` already exists
-
-### Option A — Fresh Installation (Recommended)
-
-If you want a clean database:
-
-1. Select **ewallet_db** from the left panel.
-2. Open the **Operations** tab.
-3. Click **Drop Database**.
-4. Confirm the deletion.
-5. Run **schema.sql** again.
-
-This recreates the database from scratch.
-
----
-
-### Option B — Keep Existing Data
-
-If you already have data you want to keep:
-
-Simply run **schema.sql** again.
-
-The script uses:
-
-```sql
-CREATE DATABASE IF NOT EXISTS
-CREATE TABLE IF NOT EXISTS
-```
-
-This means existing tables and data will remain unchanged.
-
-Only recreate the database if the project has a newer database structure (for example, new columns were added) and SQL errors occur.
-
----
-
-# 5. Open the Project in IntelliJ IDEA
-
-1. Open **IntelliJ IDEA**.
-2. Select:
-
-```
-File → Open
-```
-
-3. Navigate to the extracted **EWallet** folder.
-4. Select the project folder.
-5. Click **OK**.
-
-If IntelliJ asks whether to import the project as **Maven**, choose:
-
-```
-Load Maven Project
-```
-
-Wait for Maven to finish downloading all required dependencies.
-
----
-
-# 6. Configure the Database Connection
-
-Open the database configuration file (if applicable) and verify that the database credentials match your local MySQL server.
-
-Default XAMPP settings are usually:
-
-| Property | Value |
-|----------|-------|
-| Host | localhost |
-| Port | 3306 |
-| Database | ewallet_db |
-| Username | root |
-| Password | *(leave blank)* |
-
-If you changed your MySQL password, update the project configuration accordingly.
-
----
-
-# 7. Run the Application
-
-1. Open the main application class.
-2. Click **Run**.
-
-If everything is configured correctly, the login screen should appear.
-
----
-
-# Troubleshooting
-
-### Cannot connect to MySQL
-
-- Make sure **MySQL** is running in XAMPP.
-- Verify the username and password.
-- Ensure `ewallet_db` exists.
-
----
-
-### phpMyAdmin won't open
-
-- Make sure **Apache** is running.
-- Visit:
-
-```
-http://localhost/phpmyadmin
-```
-
----
-
-### Maven dependencies won't download
-
-Try:
-
-```
-Right Click Project
-→ Maven
-→ Reload Project
-```
-
-or
-
-```
-File
-→ Sync Project with Maven
-```
-
----
-
-### JavaFX errors
-
-Ensure Maven has finished downloading all project dependencies before running the application.
-
----
-
-## Notes
-
-- Do **not** move the project into the `htdocs` folder.
-- Keep XAMPP's **MySQL** service running while using the application.
-- Apache is only required for accessing **phpMyAdmin**.
-- If database-related errors occur after pulling a newer version of the project, recreate the database using **Option A** above.
+**Benefit:** the view classes are decoupled from the concrete data-access implementation. A different `UserLookup` implementation — an in-memory fake for unit testing, a different database, or a caching layer — could be swapped in without modifying `LoginView` or `PinUnlockView` at all.
