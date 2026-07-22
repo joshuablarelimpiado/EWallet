@@ -69,3 +69,7 @@ Data access was originally one large class handling everything — user lookups,
 `LoginView` and `PinUnlockView` need to look up users during login/unlock, but they depend on the `UserLookup` interface (`findUserByMobile`, `findUserByUsername`, `findUserById`) rather than directly on the concrete `UserRepository` class. `UserRepository` implements `UserLookup` and is injected through the constructor, with a no-arg constructor provided for convenience that wires in the real implementation.
 
 **Benefit:** the view classes are decoupled from the concrete data-access implementation. A different `UserLookup` implementation — an in-memory fake for unit testing, a different database, or a caching layer — could be swapped in without modifying `LoginView` or `PinUnlockView` at all.
+
+<img width="5844" height="9844" alt="image" src="https://github.com/user-attachments/assets/4404f622-ad35-4e9e-91dc-5155949a8aaa" />
+
+
