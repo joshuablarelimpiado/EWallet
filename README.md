@@ -123,7 +123,7 @@ Relevant files: `TransactionFactory.java`, `RowMapper.java`, `TransactionObserve
 
 ## UML Class Diagrams
 
-Full class diagrams (domain/service layer and UI/view layer) are in [`docs/EWallet_UML.drawio`](docs/EWallet_UML.drawio) — open with [app.diagrams.net](https://app.diagrams.net) (File → Open From → Device).
+Full class diagrams:
 
 <img width="5844" height="9844" alt="image" src="https://github.com/user-attachments/assets/4404f622-ad35-4e9e-91dc-5155949a8aaa" />
 
