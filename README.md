@@ -1,6 +1,6 @@
 # E-Wallet
 
-A desktop e-wallet application built with **JavaFX** and **MySQL**. Users can register, log in, deposit/withdraw/transfer funds, earn reward points, and manage their account, while an admin role can view and manage all users. The project also demonstrates **Java Serialization** for session persistence and two **SOLID** design principles applied to the codebase.
+A desktop e-wallet application built with **JavaFX** and **MySQL**. Users can register, log in, deposit/withdraw/transfer funds, earn reward points, and manage their account, while an admin role can view and manage all users. The project also demonstrates **Java Serialization** for session persistence, two **SOLID** design principles, and three **GoF design patterns** (Factory, Adapter, Observer) applied to the codebase.
 
 ## Major Features
 
@@ -13,6 +13,7 @@ A desktop e-wallet application built with **JavaFX** and **MySQL**. Users can re
 - **Admin dashboard** — a seeded admin account can view all registered users, activate/deactivate accounts, and review an audit log of admin actions.
 - **Light/dark theme toggle**, persisted across restarts.
 - **Session persistence via Java Serialization** (see below), so the app remembers who's logged in between runs.
+- **Transaction receipts** — every deposit, withdrawal, and transfer generates a viewable receipt (`TransactionDetailView`) with type, amount, resulting balance, and timestamp.
 
 ## Tech Stack
 
@@ -26,6 +27,26 @@ A desktop e-wallet application built with **JavaFX** and **MySQL**. Users can re
 1. Run `schema.sql` against your MySQL server (creates the `ewallet_db` database and tables).
 2. Run the app once: `mvn clean javafx:run`. On first launch it automatically seeds a working admin account (see `UserRepository.ADMIN_*` constants for the default credentials, or check the console output on first run).
 3. Log in as admin, or register your own account from the login screen.
+
+## Architecture Overview
+
+The codebase is organized into three layers:
+
+| Layer | Classes | Responsibility |
+|---|---|---|
+| **UI / View** | `LoginView`, `RegisterView`, `ForgotPasswordView`, `PinUnlockView`, `DashboardView`, `SettingsView`, `TransactionDetailView`, `AdminUserDetailView`, plus `SceneManager`, `ThemeManager`, `ThemeToggleButton`, `FloatingMoneyBackground` | JavaFX screens and navigation. Each view exposes a `getView()` method; `SceneManager` swaps the active `Scene`'s root node to switch screens. Views are stateless — they hold only the data (`User`, `Transaction`) they were constructed with. |
+| **Domain / Service** | `User`, `Transaction`, `UserSession`, `RewardTier`, `UserRepository`, `TransactionService`, `AdminAuditService`, `DataStore` | Business logic and data access. `DataStore` is a thin static facade in front of the three service classes (see SOLID section below), so the UI layer only ever calls `DataStore.xxx()`. |
+| **Persistence** | `Database`, `SessionManager`, `ThemeManager` (disk persistence), `schema.sql` | `Database` opens JDBC connections to MySQL; `SessionManager` and `ThemeManager` persist small bits of state (login session, theme choice) to local files via Java Serialization. |
+
+### How data flows — example: depositing funds
+
+1. `DashboardView` calls `DataStore.deposit(user, amount)`.
+2. `DataStore` delegates to `TransactionService.deposit(...)`.
+3. `TransactionService` updates the user's balance and inserts a transaction row in a single JDBC transaction (commit/rollback together), then awards reward points.
+4. A `Transaction` object is built via `TransactionFactory` and passed to every registered `TransactionObserver` (currently `ConsoleTransactionLogger`).
+5. `DashboardView` re-fetches the user's updated balance/history and refreshes the screen.
+
+The same create → persist → notify → refresh shape applies to withdrawals and transfers; account creation (`registerUser`), updates (`updateUserInfo`, `resetPassword`), and removal (`deactivateUser` — a soft delete that flips `is_active` rather than dropping the row) follow the equivalent path through `UserRepository` instead.
 
 ## Session Management via Java Serialization
 
@@ -69,6 +90,40 @@ Data access was originally one large class handling everything — user lookups,
 `LoginView` and `PinUnlockView` need to look up users during login/unlock, but they depend on the `UserLookup` interface (`findUserByMobile`, `findUserByUsername`, `findUserById`) rather than directly on the concrete `UserRepository` class. `UserRepository` implements `UserLookup` and is injected through the constructor, with a no-arg constructor provided for convenience that wires in the real implementation.
 
 **Benefit:** the view classes are decoupled from the concrete data-access implementation. A different `UserLookup` implementation — an in-memory fake for unit testing, a different database, or a caching layer — could be swapped in without modifying `LoginView` or `PinUnlockView` at all.
+
+## Design Patterns Applied
+
+Three classic Gang-of-Four design patterns are implemented on top of the SOLID refactor above — one creational, one structural, one behavioral.
+
+### 1. Factory Pattern (Creational)
+
+**Class:** `TransactionFactory`
+
+Each kind of money movement (deposit, withdrawal, transfer-sent, transfer-received) needs a `Transaction` object with the right type label and correctly signed amount — e.g. a withdrawal must be stored as `"Cash Out (Withdraw)"` with a **negative** amount, while a deposit is `"Cash In (Deposit)"` with a **positive** amount. `TransactionFactory` centralizes that construction logic into one static method per transaction kind (`createDeposit`, `createWithdrawal`, `createTransferSent`, `createTransferReceived`), instead of leaving each call site in `TransactionService` to hand-format the label and flip the sign itself.
+
+**Benefit:** the rules for "what does a deposit/withdrawal/transfer transaction look like" live in exactly one place. Adding a new transaction kind later means adding one factory method, not hunting through `TransactionService` for every place a `Transaction` gets built.
+
+### 2. Adapter Pattern (Structural)
+
+**Class:** `RowMapper<T>` (interface), implemented as lambda mappers inside `UserRepository` and `TransactionService`
+
+JDBC returns query results as a raw `ResultSet` — a low-level, cursor-based API that the rest of the app shouldn't need to know about. `RowMapper<T>` adapts a `ResultSet` row into a domain object (`User` or `Transaction`) via a single `map(ResultSet): T` method. Both `UserRepository` and `TransactionService` previously had near-identical hand-rolled `mapUser()`/`mapTransaction()` methods; both now delegate to a `RowMapper` implementation instead.
+
+**Benefit:** the incompatible interface (`ResultSet`) is bridged to what the domain layer actually wants (`User`, `Transaction`) through one reusable contract, instead of duplicating row-mapping logic in every repository/service class.
+
+### 3. Observer Pattern (Behavioral)
+
+**Classes:** `TransactionObserver` (interface), `TransactionService` (subject), `ConsoleTransactionLogger` (concrete observer)
+
+`TransactionService` acts as the subject: after a deposit, withdrawal, or transfer commits successfully, it calls `notifyObservers(user, transaction)`, which loops through every registered `TransactionObserver` and invokes `onTransaction(user, transaction)`. `ConsoleTransactionLogger` is the current concrete observer, printing a log line for every completed transaction; it's registered once, in `DataStore`'s static initializer.
+
+**Benefit:** `TransactionService` doesn't need to know what happens after a transaction completes — logging, notifications, analytics, or fraud checks can all be added later as new `TransactionObserver` implementations, registered with `addObserver(...)`, without touching `deposit()`/`withdraw()`/`transfer()` at all.
+
+Relevant files: `TransactionFactory.java`, `RowMapper.java`, `TransactionObserver.java`, `ConsoleTransactionLogger.java`, `TransactionService.java`, `UserRepository.java`.
+
+## UML Class Diagrams
+
+Full class diagrams (domain/service layer and UI/view layer) are in [`docs/EWallet_UML.drawio`](docs/EWallet_UML.drawio) — open with [app.diagrams.net](https://app.diagrams.net) (File → Open From → Device).
 
 <img width="5844" height="9844" alt="image" src="https://github.com/user-attachments/assets/4404f622-ad35-4e9e-91dc-5155949a8aaa" />
 
