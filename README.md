@@ -1,15 +1,15 @@
 # E-Wallet
 
-A desktop e-wallet application built with **JavaFX** and **MySQL**. Users can register, log in, deposit/withdraw/transfer funds, earn reward points, and manage their account, while an admin role can view and manage all users. The project also demonstrates **Java Serialization** for session persistence, two **SOLID** design principles, and three **GoF design patterns** (Factory, Adapter, Observer) applied to the codebase.
+A desktop e-wallet application built with **JavaFX** and **MySQL**. Users can register, log in, deposit/withdraw/transfer funds, earn reward points, and manage their account, while an admin role can view and manage all users. The project also demonstrates **Java Serialization** for session persistence, **background threading** for login, two **SOLID** design principles, and three **GoF design patterns** (Factory, Adapter, Observer) applied to the codebase.
 
 ## Major Features
 
-- **User registration & login** — sign up with a username, mobile number, password, and PIN; log in with either a username or mobile number.
+- **User registration & login** — sign up with a username, mobile number, password, and PIN; log in with either a username or mobile number. Authentication runs on a background thread (see Multithreading below) so the UI never freezes during the check.
 - **PIN-based quick unlock** — if a session already exists, the app skips straight to a PIN prompt instead of a full re-login.
 - **Wallet operations** — deposit, withdraw, and transfer funds between users, with balance and transaction history tracking.
 - **Reward points** — points are earned on transactions and tracked per user (`RewardTier`).
 - **Forgot password recovery** — reset a forgotten password using a recovery code set at registration.
-- **Account settings** — update username/password/PIN, or deactivate (soft-delete) your own account.
+- **Account settings** — update username/password/PIN, or deactivate (soft-delete) your own account. Changing your password or PIN requires re-entering the current one first, so a session left open on a shared machine can't be used to silently lock the real owner out.
 - **Admin dashboard** — a seeded admin account can view all registered users, activate/deactivate accounts, and review an audit log of admin actions.
 - **Light/dark theme toggle**, persisted across restarts.
 - **Session persistence via Java Serialization** (see below), so the app remembers who's logged in between runs.
@@ -24,7 +24,7 @@ A desktop e-wallet application built with **JavaFX** and **MySQL**. Users can re
 
 ## Getting Started
 
-1. Run `schema.sql` against your MySQL server (creates the `ewallet_db` database and tables).
+1. Run `SQL_Schema.sql` against your MySQL server (creates the `ewallet_db` database and tables).
 2. Run the app once: `mvn clean javafx:run`. On first launch it automatically seeds a working admin account (see `UserRepository.ADMIN_*` constants for the default credentials, or check the console output on first run).
 3. Log in as admin, or register your own account from the login screen.
 
@@ -36,7 +36,7 @@ The codebase is organized into three layers:
 |---|---|---|
 | **UI / View** | `LoginView`, `RegisterView`, `ForgotPasswordView`, `PinUnlockView`, `DashboardView`, `SettingsView`, `TransactionDetailView`, `AdminUserDetailView`, plus `SceneManager`, `ThemeManager`, `ThemeToggleButton`, `FloatingMoneyBackground` | JavaFX screens and navigation. Each view exposes a `getView()` method; `SceneManager` swaps the active `Scene`'s root node to switch screens. Views are stateless — they hold only the data (`User`, `Transaction`) they were constructed with. |
 | **Domain / Service** | `User`, `Transaction`, `UserSession`, `RewardTier`, `UserRepository`, `TransactionService`, `AdminAuditService`, `DataStore` | Business logic and data access. `DataStore` is a thin static facade in front of the three service classes (see SOLID section below), so the UI layer only ever calls `DataStore.xxx()`. |
-| **Persistence** | `Database`, `SessionManager`, `ThemeManager` (disk persistence), `schema.sql` | `Database` opens JDBC connections to MySQL; `SessionManager` and `ThemeManager` persist small bits of state (login session, theme choice) to local files via Java Serialization. |
+| **Persistence** | `Database`, `SessionManager`, `ThemeManager` (disk persistence), `SQL_Schema.sql` | `Database` opens JDBC connections to MySQL; `SessionManager` and `ThemeManager` persist small bits of state (login session, theme choice) to local files via Java Serialization. |
 
 ### How data flows — example: depositing funds
 
@@ -67,6 +67,24 @@ Logged-in state is persisted to disk using Java's built-in object serialization,
 - `SessionManager.load()` treats a missing or corrupted session file as "no session" (and deletes the bad file) rather than crashing the app.
 
 Relevant files: `SessionManager.java`, `UserSession.java`, `Main.java`, `LoginView.java`, `DashboardView.java`, `PinUnlockView.java`, `SettingsView.java`.
+
+## Multithreading
+
+**Class:** `LoginView`
+
+Logging in does two things that are both intentionally slow: a JDBC lookup against MySQL, and a bcrypt comparison of the entered password against the stored hash (bcrypt is deliberately CPU-expensive — that's the whole point of using it over a fast hash). JavaFX runs on a single Application Thread that also drives all UI rendering and input handling, so doing that work directly inside the login button's `onAction` handler would freeze the entire window for that stretch, however brief.
+
+`LoginView` instead wraps the lookup-and-verify step in a `javafx.concurrent.Task<User>` and runs it on a dedicated background `Thread`. While it runs, the login button disables itself and shows "Logging in..."; JavaFX's `Task` guarantees `setOnSucceeded`/`setOnFailed` callbacks fire back on the Application Thread, so the result (navigate to the dashboard, or show an error) can safely touch the scene graph without any manual synchronization.
+
+**Benefit:** the UI stays responsive during authentication instead of appearing to hang, and the threading is contained entirely inside `LoginView` — no other class needed to change to support it.
+
+Relevant files: `LoginView.java`.
+
+## Security Notes
+
+**Re-authentication for sensitive account changes.** `SettingsView` previously allowed changing your password or PIN with no proof you knew the *current* one — anyone at an already-unlocked session could silently lock the real owner out. Both flows now require the current password/PIN, checked with `PasswordUtil.matches()` against the stored bcrypt hash, before the change is accepted; a wrong or blank current credential blocks the update. Username-only changes are unaffected and stay frictionless.
+
+Relevant files: `SettingsView.java`, `PasswordUtil.java`.
 
 ## SOLID Principles Applied
 
